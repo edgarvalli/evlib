@@ -2,6 +2,15 @@ from datetime import datetime
 from typing import List, Optional
 from dataclasses import dataclass
 
+catalogo_impuestos = {
+    "retencion": {
+        "1": "Retención de ISR",
+        "2": "Retención de IVA",
+        "3": "Retención de IEPS",
+    },
+    "traslado": {"2": "Traslado de IVA", "3": "Traslado de IEPS"},
+}
+
 
 @dataclass
 class Emisor:
@@ -29,39 +38,10 @@ class Concepto:
     descripcion: str
     valor_unitario: float
     importe: float
-    impuestos: Optional["ImpuestosConcepto"] = None
-
-
-@dataclass
-class ImpuestosConcepto:
-    traslados: List["Traslado"]
-    retenciones: List["Retencion"] = None
-
-
-@dataclass
-class Traslado:
-    base: float
-    impuesto: str  # "002" para IVA
-    tipo_factor: str  # "Tasa"
-    tasa_o_cuota: float  # 0.16 para IVA 16%
-    importe: float
-
-
-@dataclass
-class Retencion:
-    base: float
-    impuesto: str  # "001" para ISR, "002" para IVA
-    tipo_factor: str  # "Tasa" o "Cuota"
-    tasa_o_cuota: float
-    importe: float
-
-
-@dataclass
-class Impuestos:
-    total_impuestos_trasladados: float
-    total_impuestos_retenidos: float
-    traslados: List[Traslado]
-    retenciones: List[Retencion] = None
+    iva_trasladado: float
+    isr_trasladado: float
+    iva_retenido: float
+    isr_retenido: float
 
 
 @dataclass
@@ -80,6 +60,7 @@ class FacturaFiscal:
         self.folio: Optional[str] = None
         self.fecha: datetime = datetime.now()
         self.sello: str = ""
+        self.uuid: str = ""  # UUID del CFDI
         self.forma_pago: str = ""  # Clave SAT forma pago
         self.metodo_pago: str = ""  # Clave SAT método pago
         self.tipo_comprobante: str = "I"  # I=Ingreso, E=Egreso, T=Traslado
@@ -92,37 +73,16 @@ class FacturaFiscal:
         self.emisor: Optional[Emisor] = None
         self.receptor: Optional[Receptor] = None
         self.conceptos: List[Concepto] = []
-        self.impuestos: Optional[Impuestos] = None
         self.complementos: List[Complemento] = []
         self.xml_string: str = None
+        self.catalogo_impuestos = catalogo_impuestos
+        self.iva: float = 0.0
+        self.isr: float = 0.0
 
     def agregar_concepto(self, concepto: Concepto):
         self.conceptos.append(concepto)
         self.subtotal += concepto.importe
         # Aquí deberías actualizar también los impuestos
-
-    def calcular_totales(self):
-        """Calcula subtotal, impuestos y total"""
-        self.subtotal = sum(c.importe for c in self.conceptos)
-
-        if self.impuestos:
-            # Calcular totales de impuestos
-            total_traslados = sum(t.importe for t in self.impuestos.traslados)
-            total_retenciones = (
-                sum(r.importe for r in self.impuestos.retenciones)
-                if self.impuestos.retenciones
-                else 0
-            )
-
-            self.impuestos.total_impuestos_trasladados = total_traslados
-            self.impuestos.total_impuestos_retenidos = total_retenciones
-
-            self.total = self.subtotal + total_traslados - total_retenciones
-        else:
-            self.total = self.subtotal
-
-        if self.descuento:
-            self.total -= self.descuento
 
     @staticmethod
     def parse_from_xml(xml_string: str) -> "FacturaFiscal":
@@ -133,6 +93,21 @@ class FacturaFiscal:
         tree = ET.fromstring(xml_string)
         factura = FacturaFiscal()
         factura.xml_string = xml_string
+
+        namespaces = {
+            "cfdi": "http://www.sat.gob.mx/cfd/4",
+            "tfd": "http://www.sat.gob.mx/TimbreFiscalDigital",
+        }
+
+        timbrefiscal = tree.find(".//tfd:TimbreFiscalDigital", namespaces)
+        if timbrefiscal is not None:
+            factura.uuid = timbrefiscal.attrib.get("UUID", "")
+            factura.fecha = (
+                datetime.fromisoformat(timbrefiscal.attrib.get("FechaTimbrado"))
+                if timbrefiscal.attrib.get("FechaTimbrado")
+                else datetime.now()
+            )
+            factura.sello = timbrefiscal.attrib.get("SelloCFD", "")
 
         # Ejemplo de parseo básico (debería ajustarse según el XML real)
         factura.serie = tree.attrib.get("Serie")
@@ -152,9 +127,8 @@ class FacturaFiscal:
         factura.total = float(tree.attrib.get("Total", 0))
 
         # Parseo de emisor
-        emisor_elem = tree.find(
-            ".//cfdi:Emisor", {"cfdi": tree.tag.split("}")[0].strip("{")}
-        )
+        emisor_elem = tree.find(".//cfdi:Emisor", namespaces)
+
         if emisor_elem is not None:
             factura.emisor = Emisor(
                 rfc=emisor_elem.attrib.get("Rfc", ""),
@@ -165,9 +139,8 @@ class FacturaFiscal:
             )
 
         # Parseo de receptor
-        receptor_elem = tree.find(
-            ".//cfdi:Receptor", {"cfdi": tree.tag.split("}")[0].strip("{")}
-        )
+        receptor_elem = tree.find(".//cfdi:Receptor", namespaces)
+
         if receptor_elem is not None:
             factura.receptor = Receptor(
                 rfc=receptor_elem.attrib.get("Rfc", ""),
@@ -178,13 +151,29 @@ class FacturaFiscal:
             )
 
         # Parseo de conceptos
-        conceptos_elem = tree.find(
-            ".//cfdi:Conceptos", {"cfdi": tree.tag.split("}")[0].strip("{")}
-        )
+        conceptos_elem = tree.find(".//cfdi:Conceptos", namespaces)
+
         if conceptos_elem is not None:
-            for concepto_elem in conceptos_elem.findall(
-                ".//cfdi:Concepto", {"cfdi": tree.tag.split("}")[0].strip("{")}
-            ):
+            for concepto_elem in conceptos_elem.findall(".//cfdi:Concepto", namespaces):
+
+                iva_trasladado = 0.0
+                isr_retenido = 0.0
+
+                for impuesto in concepto_elem.findall(".//cfdi:Traslado", namespaces):
+                    tipo =  impuesto.attrib.get("Impuesto","000")
+
+                    if tipo == "002":
+                        iva_trasladado += float(impuesto.attrib.get("Importe", 0.0))
+                        factura.iva += iva_trasladado
+                
+                for impuesto in concepto_elem.findall('.//cfdi:Retenido', namespaces):
+                    tipo = impuesto.attrib.get("Impuesto", "000")
+
+                    if tipo == "001":
+                        isr_retenido += impuesto.attrib.get("Importe",0.0)
+                        isr += isr_retenido
+                        
+
                 concepto = Concepto(
                     clave_producto_servicio=concepto_elem.attrib.get(
                         "ClaveProdServ", ""
@@ -194,6 +183,10 @@ class FacturaFiscal:
                     descripcion=concepto_elem.attrib.get("Descripcion", ""),
                     valor_unitario=float(concepto_elem.attrib.get("ValorUnitario", 0)),
                     importe=float(concepto_elem.attrib.get("Importe", 0)),
+                    iva_retenido=0.0,
+                    iva_trasladado=iva_trasladado,
+                    isr_trasladado=0.0,
+                    isr_retenido=isr_retenido,
                 )
                 factura.conceptos.append(concepto)
 
