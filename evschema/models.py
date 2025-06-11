@@ -46,7 +46,7 @@ class Model:
         """
         Genera las definiciones de índices para el modelo.
         """
-        definitions = ["UNIQUE INDEX uuid (uuid)"]
+        definitions = []
         for name, unique in self.index:
             index_type = "UNIQUE " if unique else ""
             definitions.append(
@@ -61,7 +61,6 @@ class Model:
         """
         base_fields = [
             "id INT AUTO_INCREMENT PRIMARY KEY COMMENT 'ID'",
-            "uuid VARCHAR(36) NOT NULL COMMENT 'UUID'",
         ]
         base_fields.extend(fields)
         base_fields.extend(

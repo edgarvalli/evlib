@@ -1,5 +1,12 @@
-import os
+import sys
+from pathlib import Path
 
-username = os.environ["USERNAME"]
+cwd = Path(__file__).parent.parent
 
-print(username)
+sys.path.append(str(cwd))
+
+from cfdi import SATSDK
+
+sdk = SATSDK()
+
+sdk.autenticar()

@@ -88,7 +88,6 @@ class Database:
                 port=self.config.dbport,
                 user=self.config.dbuser,
                 password=self.config.dbpass,
-                database=self.config.dbname,
             )
             cursor = connection.cursor(dictionary=dictionary, buffered=True)
             yield connection, cursor
@@ -354,10 +353,8 @@ class Database:
         values = values[:-1]
 
         query = (
-            f"INSERT INTO {model} (uuid,{','.join(fields)}) VALUES (UUID(),{values})"
+            f"INSERT INTO {self.config.dbname}.{model} ({','.join(fields)}) VALUES ({values})"
         )
-
-        print(query)
 
         try:
             with self.get_connection(dictionary=True) as (cxn, cursor):
@@ -532,7 +529,7 @@ class Database:
         values_key = ["%s"] * len(fields)
 
         # Creamos el query
-        query = f"INSERT IGNORE INTO {self.config.dbname}.{model} (uuid,{','.join(fields)}) VALUES (UUID(),{','.join(values_key)})"
+        query = f"INSERT IGNORE INTO {self.config.dbname}.{model} ({','.join(fields)}) VALUES ({','.join(values_key)})"
 
         try:
             with self.get_connection() as (cxn, cursor):
