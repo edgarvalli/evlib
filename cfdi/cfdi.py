@@ -1,14 +1,19 @@
 from datetime import datetime
 from typing import List, Optional
 from dataclasses import dataclass
+import xml.etree.ElementTree as ET
 
 catalogo_impuestos = {
     "retencion": {
-        "1": "Retención de ISR",
-        "2": "Retención de IVA",
-        "3": "Retención de IEPS",
+        "1": {"clave": "isr", "descripcion": "Retención de ISR", "tasa": 0.08},
+        "2": {"clave": "iva", "descripcion": "Retención de IVA", "tasa": 0.16},
+        "3": {"clave": "ieps", "descripcion": "Retención de IEPS", "tasa": 0.08},
     },
-    "traslado": {"2": "Traslado de IVA", "3": "Traslado de IEPS"},
+    "traslado": {
+        "1": {"clave": "isr", "descripcion": "Traslado de ISR", "tasa": 0.08},
+        "2": {"clave": "iva", "descripcion": "Traslado de IVA", "tasa": 0.16},
+        "3": {"clave": "ieps", "descripcion": "Traslado de IEPS", "tasa": 0.08},
+    },
 }
 
 
@@ -31,6 +36,15 @@ class Receptor:
 
 
 @dataclass
+class Impuesto:
+    tipo: str
+    base: float
+    impuesto: str
+    importe: float
+    tasa_o_cuota: float
+
+
+@dataclass
 class Concepto:
     clave_producto_servicio: str
     cantidad: float
@@ -38,10 +52,7 @@ class Concepto:
     descripcion: str
     valor_unitario: float
     importe: float
-    iva_trasladado: float
-    isr_trasladado: float
-    iva_retenido: float
-    isr_retenido: float
+    impuestos: List[Impuesto]
 
 
 @dataclass
@@ -76,8 +87,7 @@ class FacturaFiscal:
         self.complementos: List[Complemento] = []
         self.xml_string: str = None
         self.catalogo_impuestos = catalogo_impuestos
-        self.iva: float = 0.0
-        self.isr: float = 0.0
+        self.impuestos: List[Impuesto] = []
 
     def agregar_concepto(self, concepto: Concepto):
         self.conceptos.append(concepto)
@@ -85,20 +95,36 @@ class FacturaFiscal:
         # Aquí deberías actualizar también los impuestos
 
     @staticmethod
-    def parse_from_xml(xml_string: str) -> "FacturaFiscal":
-        # Esta función debe parsear el XML CFDI y poblar una instancia de FacturaFiscal.
-        # Aquí solo se muestra un esqueleto básico.
-        import xml.etree.ElementTree as ET
+    def obtener_impuestos_xml(
+        tree: ET.Element, namespaces: dict = {}
+    ) -> List[Impuesto]:
+        total_impuestos: List[Impuesto] = []
 
-        tree = ET.fromstring(xml_string)
+        for impuesto in tree.findall(".//cfdi:Traslado", namespaces):
+            _impuesto = Impuesto(
+                tipo="traslado",
+                importe=float(impuesto.attrib.get("Importe", 0.0)),
+                impuesto=int(impuesto.attrib.get("Impuesto", "000")),
+                base=float(impuesto.attrib.get("Base", 0.0)),
+                tasa_o_cuota=float(impuesto.attrib.get("TasaOCuota", 0.0)),
+            )
+            total_impuestos.append(_impuesto)
+
+        for impuesto in tree.findall(".//cfdi:Retencion", namespaces):
+            _impuesto = Impuesto(
+                tipo="retencion",
+                importe=float(impuesto.attrib.get("Importe", 0.0)),
+                impuesto=int(impuesto.attrib.get("Impuesto", "000")),
+                base=float(impuesto.attrib.get("Base", 0.0)),
+                tasa_o_cuota=float(impuesto.attrib.get("TasaOCuota", 0.0)),
+            )
+            total_impuestos.append(_impuesto)
+
+        return total_impuestos
+
+    @staticmethod
+    def crear_factura(tree: ET.Element, namespaces: dict = {}) -> "FacturaFiscal":
         factura = FacturaFiscal()
-        factura.xml_string = xml_string
-
-        namespaces = {
-            "cfdi": "http://www.sat.gob.mx/cfd/4",
-            "tfd": "http://www.sat.gob.mx/TimbreFiscalDigital",
-        }
-
         timbrefiscal = tree.find(".//tfd:TimbreFiscalDigital", namespaces)
         if timbrefiscal is not None:
             factura.uuid = timbrefiscal.attrib.get("UUID", "")
@@ -150,29 +176,22 @@ class FacturaFiscal:
                 codigo_postal=receptor_elem.attrib.get("CodigoPostal", None),
             )
 
+        # Parseo de impuestos de la factura completa
+        impuestos_tree = tree.find(".//cfdi:Impuestos", namespaces)
+        if impuestos_tree is not None:
+            factura.impuestos = FacturaFiscal.obtener_impuestos_xml(
+                impuestos_tree, namespaces
+            )
+
         # Parseo de conceptos
         conceptos_elem = tree.find(".//cfdi:Conceptos", namespaces)
 
         if conceptos_elem is not None:
             for concepto_elem in conceptos_elem.findall(".//cfdi:Concepto", namespaces):
-
-                iva_trasladado = 0.0
-                isr_retenido = 0.0
-
-                for impuesto in concepto_elem.findall(".//cfdi:Traslado", namespaces):
-                    tipo =  impuesto.attrib.get("Impuesto","000")
-
-                    if tipo == "002":
-                        iva_trasladado += float(impuesto.attrib.get("Importe", 0.0))
-                        factura.iva += iva_trasladado
                 
-                for impuesto in concepto_elem.findall('.//cfdi:Retenido', namespaces):
-                    tipo = impuesto.attrib.get("Impuesto", "000")
-
-                    if tipo == "001":
-                        isr_retenido += impuesto.attrib.get("Importe",0.0)
-                        isr += isr_retenido
-                        
+                total_impuestos: List[Impuesto] = FacturaFiscal.obtener_impuestos_xml(
+                    concepto_elem, namespaces
+                )
 
                 concepto = Concepto(
                     clave_producto_servicio=concepto_elem.attrib.get(
@@ -183,15 +202,33 @@ class FacturaFiscal:
                     descripcion=concepto_elem.attrib.get("Descripcion", ""),
                     valor_unitario=float(concepto_elem.attrib.get("ValorUnitario", 0)),
                     importe=float(concepto_elem.attrib.get("Importe", 0)),
-                    iva_retenido=0.0,
-                    iva_trasladado=iva_trasladado,
-                    isr_trasladado=0.0,
-                    isr_retenido=isr_retenido,
+                    impuestos=total_impuestos,
                 )
                 factura.conceptos.append(concepto)
 
         # Nota: El parseo de impuestos y complementos debe implementarse según la estructura real del XML CFDI.
         return factura
+
+    @staticmethod
+    def parse_from_xml(xml_string: str) -> "FacturaFiscal":
+        # Esta función debe parsear el XML CFDI y poblar una instancia de FacturaFiscal.
+        # Aquí solo se muestra un esqueleto básico.
+
+        tree = ET.fromstring(xml_string)
+
+        namespaces = {
+            "cfdi": "http://www.sat.gob.mx/cfd/4",
+            "tfd": "http://www.sat.gob.mx/TimbreFiscalDigital",
+        }
+
+        tipo_comprobante = tree.attrib.get("TipoDeComprobante")
+
+        if tipo_comprobante == "P":
+            print("Es un complemento de pago")
+        elif tipo_comprobante == "I":
+            comprobante = FacturaFiscal.crear_factura(tree, namespaces)
+            comprobante.xml_string = xml_string
+            return comprobante
 
     def validar(self) -> bool:
         """Valida que la factura cumpla con los requisitos mínimos del SAT"""
