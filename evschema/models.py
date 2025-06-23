@@ -71,7 +71,7 @@ class Model:
         )
         base_fields.extend(self.get_index_definitions())
 
-        query = f"CREATE TABLE IF NOT EXISTS {self.config.dbname}.{
+        query = f"CREATE TABLE IF NOT EXISTS {self.config.database}.{
             self._name} ({', '.join(base_fields)})"
         return query
 
@@ -129,7 +129,7 @@ class Model:
 
             print(
                 f"Creating table '{self._name}' in database '{
-                  self.config.dbname}'..."
+                  self.config.database}'..."
             )
             db = Database()
             db.config = self.config

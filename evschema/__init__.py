@@ -4,14 +4,9 @@ from .models import Model
 
 class EVSchema:
 
-    def __init__(self, dbname: str, config: DBConfig = None):
-        self.dbname = dbname
-        if config:
-            self.config = config
-        else:
-            self.config = DBConfig()
-
-        self.config.dbname = dbname
+    def __init__(self,config: DBConfig = None):
+        self.config = config
+        self.dbname = config.database
         self.models_list: list[Model] = []
 
     def register_model(self, model):
@@ -126,13 +121,6 @@ class EVSchema:
                 line += "#"
 
             print(line)
-
-            
-            # for name, desc in model_list:
-            #     if not desc:
-            #         desc = ""
-
-            #     db.save("models", {"name": name, "description": desc})
             
             return True
         except:

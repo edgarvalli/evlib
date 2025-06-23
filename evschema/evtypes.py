@@ -1,5 +1,5 @@
 from dataclasses import dataclass
-from typing import Dict, Any,List, Union
+from typing import Dict, Any, List, Union
 
 
 class DBBase:
@@ -14,20 +14,19 @@ class DBBase:
 
 @dataclass
 class DBConfig(DBBase):
-    dbhost: str
-    dbport: int
-    dbuser: str
-    dbpass: str
-    dbname: str
-    dbprefix: str
-
-    def __init__(self) -> None:
-        self.dbhost = "localhost"
-        self.dbport = 3306
-        self.dbuser = "root"
-        self.dbpass = "p4ssw0rd"
-        self.dbname = "mysql"
-        self.dbprefix = ""
+    def __init__(
+        self,
+        host: str = "",
+        port: int = 0,
+        user: str = "",
+        password: str = "",
+        database: str = "",
+    ) -> None:
+        self.host = host
+        self.port = port
+        self.user = user
+        self.password = password
+        self.database = database
 
 
 @dataclass
@@ -51,7 +50,7 @@ class HttpAPIResponse:
 
     error: bool
     message: str
-    data: Union[list,dict]
+    data: Union[list, dict]
 
     def __init__(self) -> None:
         self.error = True

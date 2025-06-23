@@ -2,6 +2,8 @@ import csv
 from pathlib import Path
 from dataclasses import dataclass
 from contextlib import contextmanager
+
+import mysql.connector.cursor
 from .evtypes import DBConfig, DBResult
 import mysql.connector as mysqlconnector
 import mysql.connector.abstracts
@@ -78,43 +80,48 @@ class Database:
         else:
             self.config = DBConfig()
 
-    @contextmanager
-    def get_connection(self, dictionary: bool = False):
-        connection = None
-        cursor = None
+
+    def get_connection(self) -> mysqlconnector.MySQLConnection:
         try:
-            connection = mysqlconnector.connect(
-                host=self.config.dbhost,
-                port=self.config.dbport,
-                user=self.config.dbuser,
-                password=self.config.dbpass,
-            )
-            cursor = connection.cursor(dictionary=dictionary, buffered=True)
-            yield connection, cursor
-        except mysqlconnector.ProgrammingError as e:
-            msg = "Ocurrió un error: {}".format(e.msg)
-            raise mysqlconnector.ProgrammingError(msg=msg)
+            return mysqlconnector.connect(**self.config.asdict())
+
+        except mysqlconnector.errors.ProgrammingError as e:
+            if e.errno == 1049:
+                self.config.database = 'mysql'
+                return mysqlconnector.connect(**self.config.asdict())
+
+            raise e
+        except KeyError as e:
+            raise e
 
     def database_exists(self, dbname) -> bool:
         exists = True
         query = f"SELECT SCHEMA_NAME FROM INFORMATION_SCHEMA.SCHEMATA WHERE SCHEMA_NAME = '{dbname}';"
-        with self.get_connection() as (_, cursor):
-            cursor.execute(query)
-            dbexists = cursor.fetchone()
-            if dbexists is None:
-                exists = False
+        sql = self.get_connection()
+        cursor = sql.cursor()
+        cursor.execute(query)
+        dbexists = cursor.fetchone()
+
+        if dbexists is None:
+            exists = False
+
+        cursor.close()
+        sql.close()
 
         return exists
 
     def new_database(self, dbname):
-        self.config.dbname = "mysql"
+        self.config.database = "mysql"
         query = f"CREATE DATABASE IF NOT EXISTS {dbname}"
 
-        with self.get_connection() as (cxn, cursor):
-            cursor.execute(query)
-            cxn.commit()
+        sql = self.get_connection()
+        cursor = sql.cursor()
+        cursor.execute(query)
+        sql.commit()
+        self.config.database = dbname
 
-        self.config.dbname = dbname
+        cursor.close()
+        sql.close()
 
     def table_exists(self, tablename) -> bool:
         exists = False
@@ -122,16 +129,18 @@ class Database:
         query = f"""
             SELECT COUNT(*) AS {alias}
             FROM information_schema.tables
-            WHERE table_schema = '{self.config.dbname}'
+            WHERE table_schema = '{self.config.database}'
             AND table_name = '{tablename}';
         """
-
-        with self.get_connection(dictionary=True) as (_, cursor):
-            cursor.execute(query)
-            result = cursor.fetchone()
-
+        sql = self.get_connection()
+        cursor = sql.cursor(dictionary=True)
+        cursor.execute(query)
+        result = cursor.fetchone()
         if result[alias] > 0:
             exists = True
+        
+        cursor.close()
+        sql.close()
 
         return exists
 
@@ -176,28 +185,18 @@ class Database:
 
         return query
 
-    def query(
-        self, query: str, args: tuple = None, dictionary: bool = False
-    ) -> DBConnection:
-        with self.get_connection(dictionary=dictionary) as (cxn, cursor):
-            cursor.execute(query, args)
-            return DBConnection(connection=cxn, cursor=cursor)
-
     def commit(self, query: str, args: tuple = ()) -> DBResult:
         result = DBResult()
         try:
 
-            with self.get_connection() as (cxn, cursor):
-                cursor.execute(query, args)
-                cxn.commit()
-                result.error = False
-                result.message = "Query executed succesfully."
+            cxn = self.get_connection()
+            cursor = cxn.cursor()
 
-            with self.get_connection() as (cxn, cursor):
-                cursor.execute(query)
-                cxn.commit()
-                result.error = False
-                result.message = f"Record with id {id} was updated; {cursor.rowcount}"
+            cursor.execute(query, args)
+            cxn.commit()
+            result.error = False
+            result.message = "Query executed succesfully."
+
         except (
             mysqlconnector.Error,
             mysqlconnector.DataError,
@@ -206,12 +205,9 @@ class Database:
         ) as e:
             result = handle_error_result(e.msg)
         finally:
+            cursor.close()
+            cxn.close()
             return result
-
-    def executemany(self, query: str, data: list[tuple]) -> DBConnection:
-        with self.get_connection() as (cxn, cursor):
-            cursor.executemany(query, data)
-            return DBConnection(connection=cxn, cursor=cursor)
 
     def search(
         self,
@@ -263,20 +259,22 @@ class Database:
             result.columns = columns
 
         try:
-            with self.get_connection(dictionary=True) as (_, cursor):
-                cursor.execute(query)
-                data = []
-                for row in cursor:
-                    nrow = {}
-                    for k, v in row.items():
-                        if isinstance(v, datetime):
-                            nrow[k] = v.strftime("%Y-%m-%d %H:%M:%S")
-                        else:
-                            nrow[k] = v
 
-                    data.append(nrow)
+            sql = self.get_connection()
+            cursor: mysql.connector.cursor.MySQLCursor = sql.cursor(dictionary=True)
+            cursor.execute(query)
+            data = []
+            for row in cursor:
+                nrow = {}
+                for k, v in row.items():
+                    if isinstance(v, datetime):
+                        nrow[k] = v.strftime("%Y-%m-%d %H:%M:%S")
+                    else:
+                        nrow[k] = v
 
-                result.data = data
+                data.append(nrow)
+
+            result.data = data
         except (
             mysqlconnector.Error,
             mysqlconnector.DataError,
@@ -289,11 +287,15 @@ class Database:
         except:
             result = handle_error_result(
                 "Ocurrio un error al procesar la petición ({})".format(
-                    self.config.dbname
+                    self.config.database
                 )
             )
 
-        return result
+        finally:
+            cursor.close()
+            sql.close()
+            return result
+
 
     def between(self, model: str, field: str, first, last, fields="*") -> DBResult:
         result = DBResult()
@@ -307,20 +309,25 @@ class Database:
         query = f"SELECT {fields} FROM {model} WHERE {field} BETWEEN {first} AND {last}"
 
         try:
-            with self.get_connection(dictionary=True) as (_, cursor):
-                cursor.execute(query)
-                data = []
-                for row in cursor:
-                    nrow = {}
-                    for k, v in row.items():
-                        if isinstance(v, datetime):
-                            nrow[k] = v.strftime("%Y-%m-%d %H:%M:%S")
-                        else:
-                            nrow[k] = v
 
-                    data.append(nrow)
+            sql = self.get_connection()
+            cursor: mysql.connector.cursor.MySQLCursor = sql.cursor(dictionary=True)
+            cursor.execute(query)
 
-                result.data = data
+            cursor.execute(query)
+            data = []
+            for row in cursor:
+                nrow = {}
+                for k, v in row.items():
+                    if isinstance(v, datetime):
+                        nrow[k] = v.strftime("%Y-%m-%d %H:%M:%S")
+                    else:
+                        nrow[k] = v
+
+                data.append(nrow)
+
+            result.data = data
+                
         except (
             mysqlconnector.Error,
             mysqlconnector.DataError,
@@ -331,11 +338,14 @@ class Database:
         except:
             result = handle_error_result(
                 "Ocurrio un error al procesar la petición ({})".format(
-                    self.config.dbname
+                    self.config.database
                 )
             )
 
-        return result
+        finally:
+            cursor.close()
+            sql.close()
+            return result
 
     def save(self, model: str, record: dict) -> DBResult:
         result = DBResult()
@@ -353,17 +363,19 @@ class Database:
         values = values[:-1]
 
         query = (
-            f"INSERT INTO {self.config.dbname}.{model} ({','.join(fields)}) VALUES ({values})"
+            f"INSERT INTO {self.config.database}.{model} ({','.join(fields)}) VALUES ({values})"
         )
 
         try:
-            with self.get_connection(dictionary=True) as (cxn, cursor):
-                cursor.execute(query, record)
-                cxn.commit()
-                lastid = cursor.lastrowid
-                result.error = False
-                result.message = f"Records inserted with id: {lastid}"
-                result.id = lastid
+
+            sql = self.get_connection()
+            cursor: mysql.connector.cursor.MySQLCursor = sql.cursor(dictionary=True)
+            cursor.execute(query, record)
+            sql.commit()
+            lastid = cursor.lastrowid
+            result.error = False
+            result.message = f"Records inserted with id: {lastid}"
+            result.id = lastid
         except (
             mysqlconnector.Error,
             mysqlconnector.DataError,
@@ -374,6 +386,8 @@ class Database:
         except:
             result = handle_error_result("Ocurrio un error al procesar la petición")
         finally:
+            cursor.close()
+            sql.close()
             return result
 
     def update(self, model: str, data: dict, id: int = None) -> DBResult:
@@ -392,11 +406,12 @@ class Database:
             query = f"UPDATE {model} SET {params} WHERE id={id}"
 
         try:
-            with self.get_connection() as (cxn, cursor):
-                cursor.execute(query)
-                cxn.commit()
-                result.error = False
-                result.message = f"Record with id {id} was updated; {cursor.rowcount}"
+            sql = self.get_connection()
+            cursor: mysql.connector.cursor.MySQLCursor = sql.cursor(dictionary=True)
+            cursor.execute(query)
+            sql.commit()
+            result.error = False
+            result.message = f"Record with id {id} was updated; {cursor.rowcount}"
         except (
             mysqlconnector.Error,
             mysqlconnector.DataError,
@@ -405,6 +420,8 @@ class Database:
         ) as e:
             result = handle_error_result(e.msg)
         finally:
+            cursor.close()
+            sql.close()
             result.id = id
             return result
 
@@ -413,7 +430,6 @@ class Database:
         query = "DELETE FROM %s WHERE id=%s"
 
         try:
-
             if self.commit(query=query, args=(model, id)):
                 result.error = False
                 result.message = f"Record with id {id} was removed"
@@ -440,15 +456,15 @@ class Database:
         result.data = {}
         query = "SELECT {} FROM {} WHERE id={}".format(fields, model, id)
         try:
-
-            with self.get_connection(dictionary=True) as (_, cursor):
-                cursor.execute(query)
-                data = cursor.fetchone()
-                for k, v in data.items():
-                    if isinstance(v, datetime):
-                        result.data[k] = v.strftime("%Y-%m-%d %H:%M:%S")
-                    else:
-                        result.data[k] = v
+            sql = self.get_connection()
+            cursor: mysql.connector.cursor.MySQLCursor = sql.cursor(dictionary=True)
+            cursor.execute(query)
+            data = cursor.fetchone()
+            for k, v in data.items():
+                if isinstance(v, datetime):
+                    result.data[k] = v.strftime("%Y-%m-%d %H:%M:%S")
+                else:
+                    result.data[k] = v
 
             result.error = False
             result.columns = self.get_description_model(model=model)
@@ -462,6 +478,8 @@ class Database:
         ) as e:
             result = handle_error_result(e.msg)
         finally:
+            cursor.close()
+            sql.close()
             return result
 
     def findoneby(self, model: str, where: list[tuple], fields: str = "*") -> DBResult:
@@ -469,9 +487,11 @@ class Database:
         query = self.build_query_select(model=model, where=where, fields=fields)
         try:
 
-            with self.get_connection(dictionary=True) as (_, cursor):
-                cursor.execute(query)
-                result.data = cursor.fetchone()
+            sql = self.get_connection()
+            cursor: mysql.connector.cursor.MySQLCursor = sql.cursor(dictionary=True)
+
+            cursor.execute(query)
+            result.data = cursor.fetchone()
 
             result.id = result.data["id"] if result.data else 0
             result.error = False
@@ -485,6 +505,8 @@ class Database:
         ) as e:
             result = handle_error_result(e.msg)
         finally:
+            cursor.close()
+            sql.close()
             return result
 
     def bulk_from_csv(self, csv_path: str, model: str = None) -> DBResult:
@@ -503,7 +525,7 @@ class Database:
             model = csv_path.name[:-4]
 
         print(
-            f"Guardando datos en la tabla {model} en la base de datos ({self.config.dbname})"
+            f"Guardando datos en la tabla {model} en la base de datos ({self.config.database})"
         )
         with open(csv_path, mode="r", newline="", encoding="utf-8-sig") as csv_file:
             records = [tuple(row) for row in csv.reader(csv_file)]
@@ -529,12 +551,14 @@ class Database:
         values_key = ["%s"] * len(fields)
 
         # Creamos el query
-        query = f"INSERT IGNORE INTO {self.config.dbname}.{model} ({','.join(fields)}) VALUES ({','.join(values_key)})"
+        query = f"INSERT IGNORE INTO {self.config.database}.{model} ({','.join(fields)}) VALUES ({','.join(values_key)})"
 
         try:
-            with self.get_connection() as (cxn, cursor):
-                cursor.executemany(query, values)
-                cxn.commit()
+            sql = self.get_connection()
+            cursor: mysql.connector.cursor.MySQLCursor = sql.cursor(dictionary=True)
+
+            cursor.executemany(query, values)
+            sql.commit()
         except (
             mysqlconnector.Error,
             mysqlconnector.DataError,
@@ -545,6 +569,10 @@ class Database:
         finally:
             result.error = False
             result.message = f"Records inserted on {model}; Total: {len(records)}"
+
+            cursor.close()
+            sql.close()
+
             return result
 
     def get_description_model(self, model: str) -> list[dict]:
@@ -569,9 +597,10 @@ class Database:
         WHERE TABLE_NAME = %s AND TABLE_SCHEMA = %s;
         """
         try:
-            with self.get_connection(dictionary=True) as (_, cursor):
-                cursor.execute(query, (model, self.config.dbname))
-                columns = cursor.fetchall()
+            sql = self.get_connection()
+            cursor: mysql.connector.cursor.MySQLCursor = sql.cursor(dictionary=True)
+            cursor.execute(query, (model, self.config.database))
+            columns = cursor.fetchall()
         except (
             mysqlconnector.Error,
             mysqlconnector.DataError,
@@ -580,4 +609,7 @@ class Database:
         ) as e:
             raise "Ocurrio un error: '{}' con codigo {}".format(e.msg, e.errno)
 
-        return columns
+        finally:
+            cursor.close()
+            sql.close()
+            return columns
