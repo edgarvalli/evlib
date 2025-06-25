@@ -18,11 +18,12 @@ class ComprobanteTools:
     ) -> List[Impuesto]:
         _impuestos = []
 
-        for _impuesto in tag.iterfind(".//cfdi:" + tipo, namespaces):
-            _impuesto_class = Impuesto()
-            _impuesto_class.tipo = tipo
-            _impuesto_class.set_from_dict(_impuesto.attrib)
-            _impuestos.append(_impuesto_class)
+        if tag is not None:
+            for _impuesto in tag.iterfind(".//cfdi:" + tipo, namespaces):
+                _impuesto_class = Impuesto()
+                _impuesto_class.tipo = tipo
+                _impuesto_class.set_from_dict(_impuesto.attrib)
+                _impuestos.append(_impuesto_class)
 
         return _impuestos
 
@@ -62,37 +63,45 @@ class ComprobanteIngreso:
         comprobante_impuestos = []
         comprobante_impuestos_tag = root.find(".//cfdi:Impuestos", namespaces)
 
-        for tipo in tipo_impuesto:
-            comprobante_impuestos.extend(
-                ComprobanteTools.obtener_impuestos(
-                    tag=comprobante_impuestos_tag, tipo=tipo, namespaces=namespaces
-                )
-            )
-
-        emisor_tag = root.find(".//cfdi:Emisor", namespaces)
-        emisor = Emisor()
-        emisor.set_from_dict(emisor_tag.attrib)
-
-        receptor_tag = root.find(".//cfdi:Receptor", namespaces)
-        receptor = Receptor()
-        receptor.set_from_dict(receptor_tag.attrib)
-
-        timbrefiscal_tag = root.find(".//tfd:TimbreFiscalDigital", namespaces)
-        timbrefiscal = TimbreFiscal()
-        timbrefiscal.set_from_dict(timbrefiscal_tag.attrib)
-
-        conceptos = []
-        for _concepto_tag in root.findall(".//cfdi:Concepto", namespaces):
-            _concepto = Concepto()
-            _concepto.set_from_dict(_concepto_tag.attrib)
+        if comprobante_impuestos_tag is not None:
             for tipo in tipo_impuesto:
-                _concepto.Impuestos.extend(
+                comprobante_impuestos.extend(
                     ComprobanteTools.obtener_impuestos(
                         tag=comprobante_impuestos_tag, tipo=tipo, namespaces=namespaces
                     )
                 )
-            
-            conceptos.append(_concepto)
+
+        emisor_tag = root.find(".//cfdi:Emisor", namespaces)
+
+        if emisor_tag is not None:
+            emisor = Emisor()
+            emisor.set_from_dict(emisor_tag.attrib)
+
+        receptor_tag = root.find(".//cfdi:Receptor", namespaces)
+        
+        if receptor_tag is not None:
+            receptor = Receptor()
+            receptor.set_from_dict(receptor_tag.attrib)
+
+        timbrefiscal_tag = root.find(".//tfd:TimbreFiscalDigital", namespaces)
+        
+        if timbrefiscal_tag is not None:
+            timbrefiscal = TimbreFiscal()
+            timbrefiscal.set_from_dict(timbrefiscal_tag.attrib)
+
+        conceptos = []
+        for _concepto_tag in root.findall(".//cfdi:Concepto", namespaces):
+            if _concepto_tag is not None:
+                _concepto = Concepto()
+                _concepto.set_from_dict(_concepto_tag.attrib)
+                for tipo in tipo_impuesto:
+                    _concepto.Impuestos.extend(
+                        ComprobanteTools.obtener_impuestos(
+                            tag=comprobante_impuestos_tag, tipo=tipo, namespaces=namespaces
+                        )
+                    )
+                
+                conceptos.append(_concepto)
 
         # Declarar comprobante
         
