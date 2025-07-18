@@ -78,13 +78,13 @@ class ComprobanteIngreso:
             emisor.set_from_dict(emisor_tag.attrib)
 
         receptor_tag = root.find(".//cfdi:Receptor", namespaces)
-        
+
         if receptor_tag is not None:
             receptor = Receptor()
             receptor.set_from_dict(receptor_tag.attrib)
 
         timbrefiscal_tag = root.find(".//tfd:TimbreFiscalDigital", namespaces)
-        
+
         if timbrefiscal_tag is not None:
             timbrefiscal = TimbreFiscal()
             timbrefiscal.set_from_dict(timbrefiscal_tag.attrib)
@@ -97,14 +97,16 @@ class ComprobanteIngreso:
                 for tipo in tipo_impuesto:
                     _concepto.Impuestos.extend(
                         ComprobanteTools.obtener_impuestos(
-                            tag=comprobante_impuestos_tag, tipo=tipo, namespaces=namespaces
+                            tag=comprobante_impuestos_tag,
+                            tipo=tipo,
+                            namespaces=namespaces,
                         )
                     )
-                
+
                 conceptos.append(_concepto)
 
         # Declarar comprobante
-        
+
         comprobante_ingreso = ComprobanteIngreso()
         comprobante.impuestos = comprobante_impuestos
         comprobante_ingreso.comprobante = comprobante
@@ -112,6 +114,5 @@ class ComprobanteIngreso:
         comprobante_ingreso.receptor = receptor
         comprobante_ingreso.timbrefiscal = timbrefiscal
         comprobante_ingreso.conceptos = conceptos
-
 
         return comprobante
